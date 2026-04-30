@@ -1,0 +1,603 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ESP8266 // CONTROL PANEL</title>
+  <script src="https://unpkg.com/mqtt@5.3.4/dist/mqtt.min.js"></script>
+  <style>
+    :root {
+      --bg:         #0a0a0f;
+      --surface:    #12121a;
+      --border:     #1e1e2e;
+      --neon-cyan:  #00f5ff;
+      --neon-pink:  #ff006e;
+      --neon-green: #39ff14;
+      --neon-amber: #ffaa00;
+      --neon-red:   #ff2244;
+      --text:       #c8c8e8;
+      --dim:        #44445a;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Courier New', 'Consolas', monospace;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+
+    /* Scanline overlay */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background: repeating-linear-gradient(
+        0deg,
+        transparent,
+        transparent 2px,
+        rgba(0, 0, 0, 0.08) 2px,
+        rgba(0, 0, 0, 0.08) 4px
+      );
+      pointer-events: none;
+      z-index: 999;
+    }
+
+    /* Animated background grid */
+    body::after {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background-image:
+        linear-gradient(rgba(0,245,255,0.03) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(0,245,255,0.03) 1px, transparent 1px);
+      background-size: 40px 40px;
+      animation: gridMove 20s linear infinite;
+      pointer-events: none;
+    }
+
+    @keyframes gridMove {
+      0%   { background-position: 0 0; }
+      100% { background-position: 40px 40px; }
+    }
+
+    .container {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 40px 48px;
+      width: 420px;
+      position: relative;
+      box-shadow:
+        0 0 0 1px rgba(0,245,255,0.05),
+        0 0 40px rgba(0,245,255,0.06),
+        inset 0 1px 0 rgba(255,255,255,0.04);
+    }
+
+    /* Corner accents */
+    .container::before, .container::after {
+      content: '';
+      position: absolute;
+      width: 16px;
+      height: 16px;
+      border-color: var(--neon-cyan);
+      border-style: solid;
+    }
+    .container::before {
+      top: -1px; left: -1px;
+      border-width: 2px 0 0 2px;
+    }
+    .container::after {
+      bottom: -1px; right: -1px;
+      border-width: 0 2px 2px 0;
+    }
+
+    .header {
+      text-align: center;
+      margin-bottom: 32px;
+    }
+
+    .title {
+      font-size: 20px;
+      font-weight: bold;
+      color: var(--neon-cyan);
+      letter-spacing: 3px;
+      text-shadow: 0 0 12px rgba(0,245,255,0.6);
+    }
+
+    .subtitle {
+      font-size: 11px;
+      color: var(--dim);
+      margin-top: 6px;
+      letter-spacing: 2px;
+    }
+
+    .subtitle span {
+      color: var(--neon-amber);
+    }
+
+    /* Connection status */
+    .status-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 11px;
+      letter-spacing: 1px;
+      margin-bottom: 32px;
+      padding: 8px 12px;
+      background: rgba(0,0,0,0.3);
+      border: 1px solid var(--border);
+      border-radius: 2px;
+    }
+
+    #conn-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+      transition: all 0.3s;
+    }
+
+    .dot-connected  { background: var(--neon-green); box-shadow: 0 0 8px var(--neon-green); }
+    .dot-connecting { background: var(--neon-amber); animation: pulse 1s ease-in-out infinite; }
+    .dot-error      { background: var(--neon-red);   box-shadow: 0 0 8px var(--neon-red); }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0.3; }
+    }
+
+    /* LED orb */
+    .orb-container {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      margin: 0 auto 32px;
+    }
+
+    #led-orb {
+      width: 140px;
+      height: 140px;
+      border-radius: 50%;
+      transition: all 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+      position: relative;
+    }
+
+    #led-orb::after {
+      content: '';
+      position: absolute;
+      inset: 12px;
+      border-radius: 50%;
+      background: radial-gradient(circle at 35% 35%, rgba(255,255,255,0.3), transparent 60%);
+    }
+
+    #led-orb.state-on {
+      background: radial-gradient(circle at 40% 35%, #fff9a0, #ffd700 40%, #ff8c00 75%, #cc4400);
+      box-shadow:
+        0 0 20px 8px  rgba(255, 200, 0, 0.7),
+        0 0 60px 20px rgba(255, 140, 0, 0.4),
+        0 0 100px 40px rgba(255, 80, 0, 0.15);
+      animation: orbPulse 2s ease-in-out infinite;
+    }
+
+    #led-orb.state-off {
+      background: radial-gradient(circle at 40% 35%, #1e1e2a, #14141e 60%, #0d0d14);
+      box-shadow:
+        0 0 10px 2px  rgba(0, 245, 255, 0.08),
+        inset 0 0 20px rgba(0,0,0,0.5);
+    }
+
+    #led-orb.state-unknown {
+      background: radial-gradient(circle, #1a1a24, #0d0d14);
+      box-shadow: 0 0 6px rgba(0,245,255,0.05);
+    }
+
+    @keyframes orbPulse {
+      0%, 100% { box-shadow: 0 0 20px 8px rgba(255,200,0,0.7), 0 0 60px 20px rgba(255,140,0,0.4), 0 0 100px 40px rgba(255,80,0,0.15); }
+      50%       { box-shadow: 0 0 28px 12px rgba(255,200,0,0.8), 0 0 80px 30px rgba(255,140,0,0.5), 0 0 130px 55px rgba(255,80,0,0.2); }
+    }
+
+    #led-label {
+      margin-top: 16px;
+      font-size: 13px;
+      letter-spacing: 4px;
+      transition: color 0.4s;
+    }
+
+    /* Toggle button */
+    #toggle-btn {
+      display: block;
+      width: 100%;
+      padding: 14px;
+      font-family: inherit;
+      font-size: 14px;
+      font-weight: bold;
+      letter-spacing: 5px;
+      text-transform: uppercase;
+      background: transparent;
+      border: 1px solid var(--neon-cyan);
+      color: var(--neon-cyan);
+      cursor: pointer;
+      border-radius: 2px;
+      transition: all 0.2s;
+      position: relative;
+      overflow: hidden;
+      margin-bottom: 24px;
+    }
+
+    #toggle-btn::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: var(--neon-cyan);
+      transform: translateX(-101%);
+      transition: transform 0.2s;
+      z-index: 0;
+    }
+
+    #toggle-btn:hover::before { transform: translateX(0); }
+    #toggle-btn:hover { color: var(--bg); box-shadow: 0 0 20px rgba(0,245,255,0.4); }
+    #toggle-btn span { position: relative; z-index: 1; }
+
+    #toggle-btn:disabled {
+      border-color: var(--dim);
+      color: var(--dim);
+      cursor: not-allowed;
+    }
+    #toggle-btn:disabled::before { display: none; }
+
+    #toggle-btn.btn-off {
+      border-color: var(--neon-pink);
+      color: var(--neon-pink);
+    }
+    #toggle-btn.btn-off::before { background: var(--neon-pink); }
+    #toggle-btn.btn-off:hover { box-shadow: 0 0 20px rgba(255,0,110,0.4); color: var(--bg); }
+
+    /* Log */
+    .log-wrapper {
+      background: rgba(0,0,0,0.4);
+      border: 1px solid var(--border);
+      border-radius: 2px;
+      overflow: hidden;
+    }
+
+    .log-header {
+      padding: 6px 12px;
+      font-size: 10px;
+      letter-spacing: 2px;
+      color: var(--dim);
+      border-bottom: 1px solid var(--border);
+    }
+
+    #log {
+      height: 96px;
+      overflow-y: auto;
+      padding: 8px 12px;
+      font-size: 11px;
+      line-height: 1.6;
+    }
+
+    #log::-webkit-scrollbar { width: 4px; }
+    #log::-webkit-scrollbar-track { background: transparent; }
+    #log::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+    .log-line { color: var(--dim); }
+    .log-line.ok  { color: var(--neon-green); }
+    .log-line.err { color: var(--neon-red); }
+    .log-line.cmd { color: var(--neon-cyan); }
+    .log-line.st  { color: var(--neon-amber); }
+
+    /* WiFi config button */
+    #wifi-btn {
+      display: block;
+      width: 100%;
+      padding: 10px;
+      margin-top: 12px;
+      font-family: inherit;
+      font-size: 11px;
+      letter-spacing: 3px;
+      text-transform: uppercase;
+      background: transparent;
+      border: 1px solid var(--dim);
+      color: var(--dim);
+      cursor: pointer;
+      border-radius: 2px;
+      transition: all 0.2s;
+    }
+    #wifi-btn:hover {
+      border-color: var(--neon-amber);
+      color: var(--neon-amber);
+      box-shadow: 0 0 10px rgba(255,170,0,0.2);
+    }
+
+    /* Modal overlay */
+    .modal-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.85);
+      z-index: 1000;
+      align-items: center;
+      justify-content: center;
+    }
+    .modal-overlay.open { display: flex; }
+
+    .modal {
+      background: var(--surface);
+      border: 1px solid var(--neon-amber);
+      border-radius: 4px;
+      padding: 32px;
+      width: 360px;
+      max-width: 92vw;
+      position: relative;
+      box-shadow: 0 0 40px rgba(255,170,0,0.15);
+    }
+    .modal::before, .modal::after {
+      content: '';
+      position: absolute;
+      width: 14px; height: 14px;
+      border-color: var(--neon-amber);
+      border-style: solid;
+    }
+    .modal::before { top: -1px; left: -1px; border-width: 2px 0 0 2px; }
+    .modal::after  { bottom: -1px; right: -1px; border-width: 0 2px 2px 0; }
+
+    .modal-title {
+      font-size: 14px;
+      letter-spacing: 3px;
+      color: var(--neon-amber);
+      text-shadow: 0 0 8px rgba(255,170,0,0.5);
+      margin-bottom: 20px;
+    }
+
+    .step {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 14px;
+      font-size: 12px;
+      line-height: 1.6;
+      color: var(--text);
+    }
+    .step-num {
+      flex-shrink: 0;
+      width: 20px; height: 20px;
+      border: 1px solid var(--neon-amber);
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 10px;
+      color: var(--neon-amber);
+    }
+    .step code {
+      background: rgba(255,170,0,0.1);
+      border: 1px solid rgba(255,170,0,0.2);
+      border-radius: 2px;
+      padding: 1px 6px;
+      color: var(--neon-amber);
+      font-family: inherit;
+    }
+
+    .modal-note {
+      margin-top: 16px;
+      padding: 10px 12px;
+      background: rgba(255,34,68,0.08);
+      border-left: 2px solid var(--neon-red);
+      font-size: 11px;
+      color: var(--dim);
+      line-height: 1.6;
+    }
+    .modal-note b { color: var(--neon-red); }
+
+    .modal-close {
+      display: block;
+      width: 100%;
+      margin-top: 20px;
+      padding: 10px;
+      font-family: inherit;
+      font-size: 11px;
+      letter-spacing: 3px;
+      background: transparent;
+      border: 1px solid var(--dim);
+      color: var(--dim);
+      cursor: pointer;
+      border-radius: 2px;
+      transition: all 0.2s;
+    }
+    .modal-close:hover { border-color: var(--neon-amber); color: var(--neon-amber); }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div class="title">// CONTROL PANEL //</div>
+      <div class="subtitle">DEVICE: <span id="device-id">nodemcu_a1b2c3</span></div>
+    </div>
+
+    <div class="status-bar">
+      <span id="conn-dot" class="dot-connecting"></span>
+      <span id="conn-label">INITIALIZING...</span>
+    </div>
+
+    <div class="orb-container">
+      <div id="led-orb" class="state-unknown"></div>
+      <div id="led-label" style="color: var(--dim)">UNKNOWN</div>
+    </div>
+
+    <button id="toggle-btn" disabled onclick="toggleLed()">
+      <span id="btn-text">CONNECTING</span>
+    </button>
+
+    <div class="log-wrapper">
+      <div class="log-header">&gt; SYSTEM LOG</div>
+      <div id="log"></div>
+    </div>
+
+    <button id="wifi-btn" onclick="document.getElementById('wifi-modal').classList.add('open')">
+      <span>// 如何配置 Wi-Fi //</span>
+    </button>
+  </div>
+
+  <!-- WiFi 配置说明浮层 -->
+  <div class="modal-overlay" id="wifi-modal">
+    <div class="modal">
+      <div class="modal-title">// WI-FI 配置指南 //</div>
+
+      <div class="step">
+        <div class="step-num">1</div>
+        <div>烧录固件后，首次启动（或重置后），设备会创建一个热点：<br><code>ESP8266-Setup</code> 密码：<code>12345678</code></div>
+      </div>
+      <div class="step">
+        <div class="step-num">2</div>
+        <div>手机连接该热点，浏览器访问 <code>192.168.4.1</code></div>
+      </div>
+      <div class="step">
+        <div class="step-num">3</div>
+        <div>点击 <code>Configure WiFi</code>，选择你家的 Wi-Fi，输入密码，保存</div>
+      </div>
+      <div class="step">
+        <div class="step-num">4</div>
+        <div>设备自动重启并连接 Wi-Fi，之后即可通过本页面远程控制</div>
+      </div>
+
+      <div class="modal-note">
+        <b>重置 Wi-Fi：</b>上电后3秒内长按板子上的 <code>FLASH</code> 按钮，设备会清除已保存的 Wi-Fi 并重新进入配网热点模式。
+      </div>
+
+      <button class="modal-close" onclick="resetWifi()" style="margin-top:12px;border-color:var(--neon-red);color:var(--neon-red);">
+        重置设备 Wi-Fi
+      </button>
+      <button class="modal-close" onclick="document.getElementById('wifi-modal').classList.remove('open')">
+        关闭
+      </button>
+    </div>
+  </div>
+
+  <script>
+    const DEVICE_ID   = 'nodemcu_a1b2c3';
+    const TOPIC_CTRL  = `esp8266/led/${DEVICE_ID}/control`;
+    const TOPIC_STATE = `esp8266/led/${DEVICE_ID}/state`;
+    const TOPIC_CMD   = `esp8266/led/${DEVICE_ID}/cmd`;
+    const BROKER_URL  = location.protocol === 'https:'
+      ? 'wss://broker.hivemq.com:8884/mqtt'
+      : 'ws://broker.hivemq.com:8000/mqtt';
+
+    const clientId = 'web-' + Math.random().toString(16).slice(2, 10);
+
+    let ledState = null;
+    let client;
+
+    function log(msg, cls = '') {
+      const el = document.getElementById('log');
+      const ts  = new Date().toTimeString().slice(0, 8);
+      const line = document.createElement('div');
+      line.className = 'log-line ' + cls;
+      line.textContent = `[${ts}] ${msg}`;
+      el.appendChild(line);
+      el.scrollTop = el.scrollHeight;
+    }
+
+    function setConn(state) {
+      const dot   = document.getElementById('conn-dot');
+      const label = document.getElementById('conn-label');
+      dot.className = '';
+      if (state === 'connected')  { dot.classList.add('dot-connected');  label.textContent = 'CONNECTED'; }
+      if (state === 'connecting') { dot.classList.add('dot-connecting'); label.textContent = 'CONNECTING...'; }
+      if (state === 'error')      { dot.classList.add('dot-error');      label.textContent = 'DISCONNECTED'; }
+    }
+
+    function setLedUI(state) {
+      ledState = state;
+      const orb   = document.getElementById('led-orb');
+      const label = document.getElementById('led-label');
+      const btn   = document.getElementById('toggle-btn');
+      const text  = document.getElementById('btn-text');
+
+      if (state === 'ON') {
+        orb.className   = 'state-on';
+        label.textContent = 'LED  ON';
+        label.style.color = '#ffd700';
+        text.textContent  = 'TURN OFF';
+        btn.className     = 'btn-off';
+      } else if (state === 'OFF') {
+        orb.className   = 'state-off';
+        label.textContent = 'LED  OFF';
+        label.style.color = 'var(--dim)';
+        text.textContent  = 'TURN ON';
+        btn.className     = '';
+      }
+    }
+
+    function resetWifi() {
+      if (!client || !client.connected) { log('Not connected', 'err'); return; }
+      if (!confirm('确认重置 Wi-Fi？设备将清除保存的 Wi-Fi 并重启进入配网模式。')) return;
+      client.publish(TOPIC_CMD, 'RESET_WIFI', { qos: 1 });
+      log('→ RESET_WIFI sent', 'err');
+      document.getElementById('wifi-modal').classList.remove('open');
+    }
+
+    function toggleLed() {
+      if (!client || !client.connected) { log('Not connected', 'err'); return; }
+      const cmd = (ledState === 'ON') ? 'OFF' : 'ON';
+      client.publish(TOPIC_CTRL, cmd, { qos: 1 });
+      log(`→ PUB ${TOPIC_CTRL}: ${cmd}`, 'cmd');
+    }
+
+    function connect() {
+      setConn('connecting');
+      log(`Connecting to ${BROKER_URL}`);
+
+      client = mqtt.connect(BROKER_URL, {
+        clientId,
+        clean: true,
+        reconnectPeriod: 5000,
+        connectTimeout:  10000,
+      });
+
+      client.on('connect', () => {
+        setConn('connected');
+        log('Broker connected', 'ok');
+        client.subscribe(TOPIC_STATE, { qos: 1 }, (err) => {
+          if (err) { log('Subscribe failed: ' + err.message, 'err'); return; }
+          log(`← SUB ${TOPIC_STATE}`, 'cmd');
+        });
+        document.getElementById('toggle-btn').disabled = false;
+        if (ledState === null) document.getElementById('btn-text').textContent = 'TOGGLE';
+      });
+
+      client.on('message', (topic, message) => {
+        const payload = message.toString();
+        if (topic === TOPIC_STATE) {
+          log(`← STATE: ${payload}`, 'st');
+          setLedUI(payload);
+        }
+      });
+
+      client.on('error', (err) => {
+        setConn('error');
+        log('Error: ' + err.message, 'err');
+      });
+
+      client.on('reconnect', () => {
+        setConn('connecting');
+        log('Reconnecting...');
+        document.getElementById('toggle-btn').disabled = true;
+        document.getElementById('btn-text').textContent = 'CONNECTING';
+      });
+
+      client.on('offline', () => {
+        setConn('error');
+        log('Offline', 'err');
+        document.getElementById('toggle-btn').disabled = true;
+        document.getElementById('btn-text').textContent = 'OFFLINE';
+      });
+    }
+
+    document.getElementById('device-id').textContent = DEVICE_ID;
+    connect();
+  </script>
+</body>
+</html>
