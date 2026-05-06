@@ -8,12 +8,12 @@
 
 ## 硬件
 
-| 参数      | 说明                                  |
-| ------- | ----------------------------------- |
-| 板子      | Ai-Thinker NodeMCU-8266 v1.2（安信可科技） |
-| WiFi 模块 | ESP-12S                             |
-| 控制引脚    | GPIO2（板载 LED，HIGH=亮，LOW=灭）          |
-| 按键      | 仅 RST 键                             |
+| 参数 | 说明 |
+|------|------|
+| 板子 | Ai-Thinker NodeMCU-8266 v1.2（安信可科技） |
+| WiFi 模块 | ESP-12S |
+| 控制引脚 | GPIO2（板载 LED，HIGH=亮，LOW=灭） |
+| 按键 | 仅 RST 键 |
 
 ---
 
@@ -29,11 +29,12 @@
 
 ### MQTT 主题
 
-| 主题                                   | 方向      | 内容           |
-| ------------------------------------ | ------- | ------------ |
+| 主题 | 方向 | payload |
+|------|------|---------|
 | `esp8266/led/nodemcu_a1b2c3/control` | 网页 → 设备 | `ON` / `OFF` |
-| `esp8266/led/nodemcu_a1b2c3/state`   | 设备 → 网页 | `ON` / `OFF` |
-| `esp8266/led/nodemcu_a1b2c3/cmd`     | 网页 → 设备 | `RESET_WIFI` |
+| `esp8266/led/nodemcu_a1b2c3/cmd` | 网页 → 设备 | `RESET_WIFI` |
+| `esp8266/led/nodemcu_a1b2c3/status` | 设备 → 网页 | `{"ip":"x.x.x.x","led":"ON/OFF","src":"boot/cmd"}` |
+| `esp8266/led/nodemcu_a1b2c3/ota` | 设备 → 网页 | `START` / `DONE` / `ERROR:x` |
 
 ---
 
@@ -57,29 +58,31 @@ http://arduino.esp8266.com/stable/package_esp8266com_index.json
 
 工具 → 管理库，分别搜索安装：
 
-| 库名             | 作者           |
-| -------------- | ------------ |
+| 库名 | 作者 |
+|------|------|
 | `PubSubClient` | Nick O'Leary |
-| `WiFiManager`  | tzapu        |
+| `WiFiManager` | tzapu |
 
 ### 4. 开发板配置
 
 工具菜单选择：
 
-| 选项            | 值                                              |
-| ------------- | ---------------------------------------------- |
-| 开发板           | NodeMCU 1.0 (ESP-12E Module)                   |
-| Upload Speed  | 115200                                         |
-| CPU Frequency | 80 MHz                                         |
-| Flash Size    | 4MB (FS:2MB OTA:~1019KB)                       |
-| Port          | 对应的 USB 串口（macOS 一般是 `/dev/cu.usbserial-xxxx`） |
+| 选项 | 值 |
+|------|-----|
+| 开发板 | NodeMCU 1.0 (ESP-12E Module) |
+| Upload Speed | 115200 |
+| CPU Frequency | 80 MHz |
+| Flash Size | 4MB (FS:2MB OTA:~1019KB) |
+| Port | 对应的 USB 串口（macOS 一般是 `/dev/cu.usbserial-xxxx`） |
 
-### 5. 烧录固件
+### 5. 首次烧录（USB）
 
 1. USB 连接板子与电脑
 2. 打开 `esp8266_LED_control.ino`
 3. 点击上传按钮
 4. 打开串口监视器（波特率 115200）查看启动日志
+
+> 首次必须 USB 烧录，之后可通过 OTA 无线升级。
 
 ---
 
@@ -90,12 +93,7 @@ http://arduino.esp8266.com/stable/package_esp8266com_index.json
 
 ---
 
-## 固件说明
-
-**依赖库（Arduino IDE 库管理器安装）：**
-
-- `PubSubClient` by Nick O'Leary
-- `WiFiManager` by tzapu
+## WiFi 配网
 
 **首次配网：**
 
@@ -106,14 +104,34 @@ http://arduino.esp8266.com/stable/package_esp8266com_index.json
 
 **重置 WiFi：**
 
-- 打开网页控制端 → 点击底部 `// 如何配置 Wi-Fi //` → 点击 `重置设备 Wi-Fi`（设备需在线）
+网页控制端 → 底部 `// 如何配置 Wi-Fi //` → 点击 `重置设备 Wi-Fi`（设备需在线）
+
+---
+
+## OTA 无线升级
+
+首次 USB 烧录后，后续固件更新通过 OTA 进行：
+
+1. 确保电脑与设备在同一局域网
+2. Arduino IDE → 工具 → 端口 → 选择网络端口 `nodemcu_a1b2c3`
+3. 正常点击上传，弹出密码框输入 `ota12345678`
+4. 网页日志区会显示升级进度，完成后设备自动重启并重新上线
 
 ---
 
 ## 网页控制端
 
-- **UI 风格**：Cyberpunk / Neon 暗色主题
-- **功能**：LED 实时状态、一键开关、MQTT 连接状态、系统日志、WiFi 配网说明与重置
-- **访问方式**：
-  - 公网：https://xijianwei.github.io/esp8266-led-control/
-  - 局域网：`http://[Mac的IP]:8080/index.html`（需运行 `python3 -m http.server 8080`）
+**功能：**
+- LED 实时状态显示（Cyberpunk/Neon 暗色主题）
+- 一键开关，含 SWITCHING 状态与 5 秒超时保护
+- MQTT 连接状态指示
+- 系统日志（三种颜色区分事件来源）
+  - 青色：网页发出指令 `→ CMD: ON/OFF`
+  - 琥珀色：设备执行回包 `LED → ON/OFF`
+  - 绿色：设备上线 `DEVICE ONLINE · IP · LED OFF`
+- OTA 升级进度条
+- WiFi 配网说明与一键重置
+
+**访问方式：**
+- 公网：https://xijianwei.github.io/esp8266-led-control/
+- 局域网：`http://[Mac的IP]:8080/index.html`（需运行 `python3 -m http.server 8080`）

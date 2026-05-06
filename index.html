@@ -258,6 +258,37 @@
     #toggle-btn.btn-off::before { background: var(--neon-pink); }
     #toggle-btn.btn-off:hover { box-shadow: 0 0 20px rgba(255,0,110,0.4); color: var(--bg); }
 
+    /* OTA 进度条 */
+    #ota-bar-wrap {
+      display: none;
+      margin-bottom: 12px;
+      background: rgba(0,0,0,0.4);
+      border: 1px solid var(--neon-amber);
+      border-radius: 2px;
+      overflow: hidden;
+    }
+    #ota-bar-wrap.active { display: block; }
+    #ota-bar-header {
+      padding: 5px 12px;
+      font-size: 10px;
+      letter-spacing: 2px;
+      color: var(--neon-amber);
+      border-bottom: 1px solid rgba(255,170,0,0.2);
+      display: flex;
+      justify-content: space-between;
+    }
+    #ota-bar-track {
+      height: 4px;
+      background: rgba(255,170,0,0.1);
+    }
+    #ota-bar-fill {
+      height: 100%;
+      width: 0%;
+      background: var(--neon-amber);
+      box-shadow: 0 0 8px var(--neon-amber);
+      transition: width 0.4s ease;
+    }
+
     /* Log */
     .log-wrapper {
       background: rgba(0,0,0,0.4);
@@ -381,16 +412,6 @@
       font-family: inherit;
     }
 
-    .modal-note {
-      margin-top: 16px;
-      padding: 10px 12px;
-      background: rgba(255,34,68,0.08);
-      border-left: 2px solid var(--neon-red);
-      font-size: 11px;
-      color: var(--dim);
-      line-height: 1.6;
-    }
-    .modal-note b { color: var(--neon-red); }
 
     .modal-close {
       display: block;
@@ -431,6 +452,16 @@
       <span id="btn-text">CONNECTING</span>
     </button>
 
+    <div id="ota-bar-wrap">
+      <div id="ota-bar-header">
+        <span>&gt; OTA UPGRADING</span>
+        <span id="ota-pct">0%</span>
+      </div>
+      <div id="ota-bar-track">
+        <div id="ota-bar-fill"></div>
+      </div>
+    </div>
+
     <div class="log-wrapper">
       <div class="log-header">&gt; SYSTEM LOG</div>
       <div id="log"></div>
@@ -463,10 +494,6 @@
         <div>设备自动重启并连接 Wi-Fi，之后即可通过本页面远程控制</div>
       </div>
 
-      <div class="modal-note">
-        <b>重置 Wi-Fi：</b>上电后3秒内长按板子上的 <code>FLASH</code> 按钮，设备会清除已保存的 Wi-Fi 并重新进入配网热点模式。
-      </div>
-
       <button class="modal-close" onclick="resetWifi()" style="margin-top:12px;border-color:var(--neon-red);color:var(--neon-red);">
         重置设备 Wi-Fi
       </button>
@@ -478,9 +505,10 @@
 
   <script>
     const DEVICE_ID   = 'nodemcu_a1b2c3';
-    const TOPIC_CTRL  = `esp8266/led/${DEVICE_ID}/control`;
-    const TOPIC_STATE = `esp8266/led/${DEVICE_ID}/state`;
-    const TOPIC_CMD   = `esp8266/led/${DEVICE_ID}/cmd`;
+    const TOPIC_CTRL   = `esp8266/led/${DEVICE_ID}/control`;  // 网页 → 设备：LED 开关
+    const TOPIC_CMD    = `esp8266/led/${DEVICE_ID}/cmd`;       // 网页 → 设备：设备命令
+    const TOPIC_STATUS = `esp8266/led/${DEVICE_ID}/status`;    // 设备 → 网页：设备状态 JSON
+    const TOPIC_OTA    = `esp8266/led/${DEVICE_ID}/ota`;       // 设备 → 网页：OTA 结果
     const BROKER_URL  = location.protocol === 'https:'
       ? 'wss://broker.hivemq.com:8884/mqtt'
       : 'ws://broker.hivemq.com:8000/mqtt';
@@ -489,6 +517,54 @@
 
     let ledState = null;
     let client;
+    let otaTimer = null;
+    let otaPct = 0;
+    let switchTimer = null;  // SWITCHING 超时保护计时器
+
+    const otaWrap = () => document.getElementById('ota-bar-wrap');
+    const otaFill = () => document.getElementById('ota-bar-fill');
+    const otaPctEl = () => document.getElementById('ota-pct');
+
+    function startOtaBar() {
+      // 若已有进度条在跑（START消息重复），先清掉
+      if (otaTimer) { clearInterval(otaTimer); otaTimer = null; }
+      otaPct = 0;
+      otaFill().style.background = 'var(--neon-amber)';
+      otaFill().style.width = '0%';
+      otaPctEl().textContent = '0%';
+      otaWrap().classList.add('active');
+      // 模拟进度：90秒内爬到90%，剩余10%等 DONE 触发
+      otaTimer = setInterval(() => {
+        if (otaPct < 90) {
+          otaPct += 1;
+          otaFill().style.width = otaPct + '%';
+          otaPctEl().textContent = otaPct + '%';
+        }
+      }, 1000);
+    }
+
+    function endOtaBar(success) {
+      clearInterval(otaTimer);
+      otaTimer = null;
+      if (success) {
+        otaFill().style.width = '100%';
+        otaFill().style.background = 'var(--neon-green)';
+        otaPctEl().textContent = '100%';
+      } else {
+        otaFill().style.background = 'var(--neon-red)';
+        otaPctEl().textContent = 'FAIL';
+      }
+      setTimeout(() => {
+        otaWrap().classList.remove('active');
+        otaFill().style.background = 'var(--neon-amber)';
+      }, 3000);
+    }
+
+    // 若 START 消息丢失但 DONE/ERROR 到达，自动补启进度条再结束
+    function safeEndOtaBar(success) {
+      if (!otaTimer && !otaWrap().classList.contains('active')) startOtaBar();
+      endOtaBar(success);
+    }
 
     function log(msg, cls = '') {
       const el = document.getElementById('log');
@@ -517,17 +593,19 @@
       const text  = document.getElementById('btn-text');
 
       if (state === 'ON') {
-        orb.className   = 'state-on';
+        orb.className     = 'state-on';
         label.textContent = 'LED  ON';
         label.style.color = '#ffd700';
         text.textContent  = 'TURN OFF';
         btn.className     = 'btn-off';
+        btn.disabled      = false;
       } else if (state === 'OFF') {
-        orb.className   = 'state-off';
+        orb.className     = 'state-off';
         label.textContent = 'LED  OFF';
         label.style.color = 'var(--dim)';
         text.textContent  = 'TURN ON';
         btn.className     = '';
+        btn.disabled      = false;
       }
     }
 
@@ -541,9 +619,23 @@
 
     function toggleLed() {
       if (!client || !client.connected) { log('Not connected', 'err'); return; }
+      if (ledState === null) { log('State unknown, wait...', 'err'); return; }
       const cmd = (ledState === 'ON') ? 'OFF' : 'ON';
       client.publish(TOPIC_CTRL, cmd, { qos: 1 });
-      log(`→ PUB ${TOPIC_CTRL}: ${cmd}`, 'cmd');
+      log(`→ CMD: ${cmd}`, 'cmd');
+      document.getElementById('btn-text').textContent = 'SWITCHING...';
+      document.getElementById('toggle-btn').disabled = true;
+      // 5秒内未收到回包则恢复按钮，避免卡死
+      if (switchTimer) clearTimeout(switchTimer);
+      switchTimer = setTimeout(() => {
+        switchTimer = null;
+        const btn = document.getElementById('toggle-btn');
+        if (btn.disabled) {
+          btn.disabled = false;
+          document.getElementById('btn-text').textContent = ledState === 'ON' ? 'TURN OFF' : 'TURN ON';
+          log('Switch timeout, no response from device', 'err');
+        }
+      }, 5000);
     }
 
     function connect() {
@@ -560,19 +652,45 @@
       client.on('connect', () => {
         setConn('connected');
         log('Broker connected', 'ok');
-        client.subscribe(TOPIC_STATE, { qos: 1 }, (err) => {
+        client.subscribe(TOPIC_STATUS, { qos: 1 }, (err) => {
           if (err) { log('Subscribe failed: ' + err.message, 'err'); return; }
-          log(`← SUB ${TOPIC_STATE}`, 'cmd');
+          log(`← SUB ${TOPIC_STATUS}`, 'cmd');
         });
-        document.getElementById('toggle-btn').disabled = false;
-        if (ledState === null) document.getElementById('btn-text').textContent = 'TOGGLE';
+        client.subscribe(TOPIC_OTA, { qos: 0 }, (err) => {
+          if (!err) log(`← SUB ${TOPIC_OTA}`, 'cmd');
+        });
+        // 按钮在收到 status retain 消息后才启用，避免 ledState=null 时误操作
       });
 
       client.on('message', (topic, message) => {
         const payload = message.toString();
-        if (topic === TOPIC_STATE) {
-          log(`← STATE: ${payload}`, 'st');
-          setLedUI(payload);
+        if (topic === TOPIC_STATUS) {
+          try {
+            const d = JSON.parse(payload);
+            if (d.led === 'RESETTING') {
+              log('设备正在重置 Wi-Fi...', 'err');
+            } else if (d.src === 'cmd') {
+              if (switchTimer) { clearTimeout(switchTimer); switchTimer = null; }
+              log(`LED → ${d.led}`, 'st');
+              setLedUI(d.led);
+            } else {
+              log(`DEVICE ONLINE · ${d.ip} · LED ${d.led}`, 'ok');
+              setLedUI(d.led);
+            }
+          } catch(e) {
+            log(`← STATUS: ${payload}`, 'st');
+          }
+        } else if (topic === TOPIC_OTA) {
+          if (payload === 'START') {
+            log('OTA 升级开始...', 'st');
+            startOtaBar();
+          } else if (payload === 'DONE') {
+            log('OTA 升级完成，设备重启中', 'ok');
+            safeEndOtaBar(true);
+          } else if (payload.startsWith('ERROR')) {
+            log(`OTA 失败: ${payload}`, 'err');
+            safeEndOtaBar(false);
+          }
         }
       });
 
@@ -584,6 +702,8 @@
       client.on('reconnect', () => {
         setConn('connecting');
         log('Reconnecting...');
+        ledState = null;
+        if (switchTimer) { clearTimeout(switchTimer); switchTimer = null; }
         document.getElementById('toggle-btn').disabled = true;
         document.getElementById('btn-text').textContent = 'CONNECTING';
       });
@@ -591,6 +711,8 @@
       client.on('offline', () => {
         setConn('error');
         log('Offline', 'err');
+        ledState = null;
+        if (switchTimer) { clearTimeout(switchTimer); switchTimer = null; }
         document.getElementById('toggle-btn').disabled = true;
         document.getElementById('btn-text').textContent = 'OFFLINE';
       });
